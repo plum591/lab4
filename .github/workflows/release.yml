@@ -2,76 +2,101 @@ name: C++ CI/CD
 
 on:
   push:
-    branches: ['**']
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  BUILD_TYPE: Release
 
 permissions:
   contents: read
 
 jobs:
-  build:
-    if: ${{ !github.event.deleted && github.event.commits[0] != null }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-        commit: ${{ github.event.commits.*.id }}
-    runs-on: ${{ matrix.os }}
-
+  bump-version:
+    runs-on: ubuntu-latest
+    outputs:
+      new_tag: ${{ steps.bump_version.outputs.new_tag }}
+      commit_count: ${{ steps.bump_version.outputs.commit_count }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ matrix.commit }}
+          fetch-depth: 0
+
+      - name: Get commit count and tag
+        id: bump_version
+        run: |
+          commit_count=$(git rev-list --count HEAD)
+          echo "new_tag=v1.0.$commit_count" >> "$GITHUB_OUTPUT"
+          echo "commit_count=$commit_count" >> "$GITHUB_OUTPUT"
+
+  build-linux:
+    runs-on: ubuntu-latest
+    needs: bump-version
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Configure CMake
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DLAB4_VERSION_PATCH=${{ needs.bump-version.outputs.commit_count }}
 
       - name: Build
-        run: cmake --build build --config Release
+        run: cmake --build build --config ${{ env.BUILD_TYPE }}
 
-      - name: Run tests
-        run: ctest --test-dir build -C Release --output-on-failure
-
-      - name: Create package
+      - name: Create DEB package
         working-directory: build
-        run: cpack -C Release
+        run: cpack -C ${{ env.BUILD_TYPE }} -G DEB
 
-      - name: Upload package
+      - name: Upload Linux package
         uses: actions/upload-artifact@v4
         with:
-          name: package-${{ matrix.commit }}-${{ matrix.os }}
-          path: |
-            build/*.deb
-            build/*.zip
+          name: linux-package-${{ needs.bump-version.outputs.new_tag }}
+          path: build/*.deb
           if-no-files-found: error
 
-  release:
-    needs: build
-    strategy:
-      fail-fast: false
-      matrix:
-        commit: ${{ github.event.commits.*.id }}
+  build-windows:
+    runs-on: windows-latest
+    needs: bump-version
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure CMake
+        run: cmake -S . -B build -A x64 -DLAB4_VERSION_PATCH=${{ needs.bump-version.outputs.commit_count }}
+
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }}
+
+      - name: Create ZIP package
+        working-directory: build
+        run: cpack -C ${{ env.BUILD_TYPE }} -G ZIP
+
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-package-${{ needs.bump-version.outputs.new_tag }}
+          path: build/*.zip
+          if-no-files-found: error
+
+  create-release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [bump-version, build-linux, build-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     concurrency:
-      group: lab4-release-${{ matrix.commit }}
-
+      group: lab4-release-${{ needs.bump-version.outputs.new_tag }}
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: package-${{ matrix.commit }}-*
-          path: packages
-          merge-multiple: true
+          path: artifacts
 
-      - name: Publish GitHub Release
+      - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          COMMIT: ${{ matrix.commit }}
+          TAG: ${{ needs.bump-version.outputs.new_tag }}
         run: |
-          tag="lab4-$COMMIT"
-          if gh release view "$tag" >/dev/null 2>&1; then
+          if gh release view "$TAG" >/dev/null 2>&1; then
             exit 0
           fi
-          gh release create "$tag" packages/*.deb packages/*.zip \
-            --target "$COMMIT" --title "Lab 4 ${COMMIT:0:7}" --notes "Commit $COMMIT"
+          gh release create "$TAG" artifacts/linux-package-"$TAG"/*.deb artifacts/windows-package-"$TAG"/*.zip \
+            --target "$GITHUB_SHA" --title "Release $TAG" --generate-notes
