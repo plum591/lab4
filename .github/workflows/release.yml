@@ -1,0 +1,77 @@
+name: C++ CI/CD
+
+on:
+  push:
+    branches: ['**']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: ${{ !github.event.deleted && github.event.commits[0] != null }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        commit: ${{ github.event.commits.*.id }}
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.commit }}
+
+      - name: Configure CMake
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Run tests
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Create package
+        working-directory: build
+        run: cpack -C Release
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.commit }}-${{ matrix.os }}
+          path: |
+            build/*.deb
+            build/*.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        commit: ${{ github.event.commits.*.id }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: lab4-release-${{ matrix.commit }}
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: package-${{ matrix.commit }}-*
+          path: packages
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT: ${{ matrix.commit }}
+        run: |
+          tag="lab4-$COMMIT"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            exit 0
+          fi
+          gh release create "$tag" packages/*.deb packages/*.zip \
+            --target "$COMMIT" --title "Lab 4 ${COMMIT:0:7}" --notes "Commit $COMMIT"
