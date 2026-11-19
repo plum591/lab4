@@ -24,6 +24,11 @@ int main()
         pool_factorials.emplace(i, factorial);
     }
 
+    for (const auto &entry : factorials)
+    {
+        std::cout << entry.first << ' ' << entry.second << '\n';
+    }
+
     for (const auto &entry : pool_factorials)
     {
         std::cout << entry.first << ' ' << entry.second << '\n';
@@ -36,6 +41,11 @@ int main()
     {
         numbers.push_back(i);
         pool_numbers.push_back(i);
+    }
+
+    for (int number : numbers)
+    {
+        std::cout << number << '\n';
     }
 
     for (int number : pool_numbers)
